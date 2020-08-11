@@ -1,0 +1,386 @@
+#!/bin/bash
+
+# laptop-tool.sh
+# Jose Batista 2020
+
+# Here we provide two main functions intended to improve the usability of an Asus Vivobook 15
+# on Debian Buster. However, these may prove useful on other configurations. Try it and find out.
+#
+# Firstly, we provide the "brightness_keys" feature, which enables the otherwise unresponsive
+# backlight keys, which on an the Asus Vivobook 15 are the fn-F4 and fn-f5 keys.
+# We accomplish this by adding acpid hooks for the keystrokes and we route them to a script
+# which talks to sysfs to bump the hardware brightness up and down in fixed increments.
+# We can autodetect the key events, so your device need not have the exact same keys.
+# Based on concept here: https://ptc-it.de/screen-brightness-workaround/
+#
+# Secondly, we offer the "synd" function, which configures the Elantec or Synaptics keypad
+# to shut off whenever you are typing, so that accidental contact will not produce spurious
+# input events which otherwise make text editing and other things a nightmare.
+# We accomplish this by installing an Xsession script which starts syndaemon for every
+# new X11 session on the system. The delay with which the touchpad is re-enabled is
+# adjustable, and is specified in decimal or float seconds.
+#
+# LICENSE
+#
+# Do whatever. If this script nukes your system, it's your fault. We make an effort to
+# warn before any files are overwritten, but there is no guarantee that our choice
+# of file names will not conflict with some other application or OS, now or in the future.
+# So, run without -f initially and make note of any potential conflicts.
+#
+
+#
+# Config
+#
+
+# Default delay to re-enable the touchpad after typing
+DEFAULT_SYND_DELAY="0.25"
+
+# Number of brightness detents to divide the hardware's range into
+# You may actually get one additional last odd-sized detent if there is a remainder
+# You might also get less in the event that your hardware is very granular
+BRIGHTNESS_DETENTS=16
+
+# Path within sysfs where we can find a list of displays with
+# software adjustable backlights
+DISPLAY_PATH="/sys/class/backlight"
+
+# Directory into which we will install the scripts that perform
+# the backlight value update
+ACPI_ACTION_DIR="/etc/acpi"
+
+# acpid uses files like these to register handlers for events
+HOOK_DIR="/etc/acpi/events"
+UP_HOOK="brightness_up"
+DOWN_HOOK="brightness_down"
+
+# Name of startup script to write, to launch syndaemon
+SYND_START="/etc/X11/Xsession.d/00syndaemon"
+
+#
+#
+#
+
+SCRIPT_NAME="$0"
+SYND_DELAY="$DEFAULT_SYND_DELAY"
+
+err(){
+	>&2 printf "$@\n"
+}	
+
+fail(){
+	local RESULT=$?
+	err "$@\n"
+	exit "$RESULT" 
+}
+
+indent(){
+	sed -E -e 's/^/\t/g'
+}
+
+usage(){
+	err "Usage: $SCRIPT_NAME [-f] [--list] [--up_event <string>] [--down_event <string>] [--display <name>] [--delay <decimal seconds>] <brightness_keys | synd>"
+	err
+	err "Install some settings that are useful with some laptops. For Debian Buster, and maybe others."
+	err "Written for the ASUS Vivobook 15, but might work elsewhere"
+	err "\tbrightness_keys sets up acpid to route the display brightness keys to sysfs. Useful on some ASUS laptops."
+	err "\tsynd creates an XSession script to launch syndaemon, which turns off the touchpad while you are typing"
+	err "\t\tand turns it back on when you stop."
+	err "\t\tthis doesn't sound like a bid deal until you attempt to edit large text files with your touchpad on."
+	err "\t\tWorks with Elantec touchpads, or anything else that the Synaptic driver recognizes"
+	err "\t-f forces clobbering of existing files, which we presumably created previously"
+	err "\t--list retrieves a list of eligible displays for the purpose of brightness-key routing"
+	err "\t--up_event specifies the ACPI event string for brightness-up events. Only affects brightness_keys mode."
+	err "\t--down_event specifies the ACPI event string for brightness-down events. Only affects brightness_keys mode."
+	err "\t--display specifies a string previously retrieved by using the --list option, and only affects brightness_keys, for which it is required"
+	err "\t--delay specifies how long to wait after the last key activity to re-enable touchpad input, when used with 'synd'"
+	err
+	err "If you do not specify a required event string, you will be prompted to perform the keypresses so"
+	err "that they can be detected."
+	err
+	return 0;
+}
+
+fail_wusage(){
+	err
+	usage
+	fail "$@"
+
+}
+
+emit_assignment(){
+	echo "$1"=${!1}
+}
+
+handle_flag_arg(){
+	
+	# +1 because first argument is ARGNO
+	local ARGNO
+	let ARGNO="$1"+1
+	local ARGVAL=${!ARGNO}
+
+	case "$ARGVAL" in
+		"-f")
+			CLOBBER=1
+			;;
+
+		"--delay")
+			let ++ARGNO
+			[[ "$ARGNO" < "$#" ]] || fail_wusage "Missing --delay argument"
+			SYND_DELAY=${!ARGNO}
+			;;
+
+		"--list")
+			echo "Eligible display names:"
+			ls -1 "$DISPLAY_PATH" | indent || fail_wusage "Failed listing $DISPLAY_PATH"
+			echo
+			echo Done.
+			echo
+			exit 0
+			;;
+
+		"--up_event")
+			let ++ARGNO
+			[[ "$ARGNO" < "$#" ]] || fail_wusage "Missing --up_event argument"
+			UP_EVENT=${!ARGNO}
+			;;
+
+		"--down_event")
+			let ++ARGNO
+			[[ "$ARGNO" < "$#" ]] || fail_wusage "Missing a --down_event argument"
+			DOWN_EVENT=${!ARGNO}
+			;;
+
+		"--display")
+			let ++ARGNO
+			[[ "$ARGNO" < "$#" ]] || fail_wusage "Missing --display argument"
+			DISPLAY_NAME=${!ARGNO}
+			;;
+
+		*)
+			fail_wusage "Unknown argument: $ARGVAL"
+			;;
+
+	esac
+	return $(( ARGNO - 1 ))
+}
+
+handle_args(){
+
+	local TMPARG
+
+	# Non-positional flags
+	for (( i=1; i <= $#; ++i )); do
+		TMPARG=${!i}
+		[[ ${TMPARG:0:1} != "-" ]] && break
+		handle_flag_arg $i $@
+		let i=$?
+	done
+	let REMAIN="$#"-i+1
+
+	# Positional args
+	[[ $REMAIN -gt 1  ]] && fail_wusage "Too many arguments"
+	[[ $REMAIN -lt 1 ]] && fail_wusage "Missing script action argument"
+
+	SCRIPT_FEATURE=${!i}
+}
+
+listen_for_event_impl(){
+	local RESULT
+	local LINE
+	local PID
+
+	read -s PID
+	while [[ -z $RESULT ]]; do
+		IFS="" read -s LINE
+		#err "Read: $LINE"
+		#err "Pattern: /^$1\\b.*/p"
+		RESULT=`echo "$LINE" | sed -n -E -e "/^$1\\b.*/p"` 
+		/usr/bin/echo -n "$RESULT"
+	done
+	kill "$PID"
+}	
+
+
+listen_for_event(){
+	local LINE
+	local RESULT
+
+	#acpi_listen | sed -n -E -e "/^$1\\b.*/p"  
+	#acpi_listen | sed -n -E -e "/^$1\\b.*/p" | IFS="" read LINE 
+
+	# A hairy arrangement where the pipe chain kills acpi_listen's process tree because otherwise it will not
+	# notice stdout eof until it receives the next event, so we kill it
+	(echo $BASHPID;acpi_listen) | listen_for_event_impl $1; 
+}
+
+handle_to_write(){
+	if [[ -z $CLOBBER ]]; then
+		err "We will write the following files. If they already exist, we will complain and die."
+		printf "\t%s\n" $@ 1>&2
+		err
+
+		local UHOH
+		for i in $@; do
+			if [[ -f "$i" ]]; then 
+				UHOH=boo
+				err "This file already exists, so we will exit: $i"
+			fi
+		done
+		[[ ! -z $UHOH ]] && fail "This can be overridden with -f"
+	fi
+}
+
+
+# $1 event string
+# $2 action
+# $3 file
+write_hook_file(){
+	err "Writing $3..."
+	echo "
+event=$1
+action=$2" | sudo tee "$3" > /dev/null || fail "Error writing: $2"
+
+	sudo chmod a=r,u+w "$3" || fail "Error setting permissions on: $3"
+}
+
+feature_brightness_keys(){
+	ACTION_SCRIPT="$ACPI_ACTION_DIR/set_brightness"
+	local UP_HOOK_FILE="$HOOK_DIR/$UP_HOOK"
+	local DOWN_HOOK_FILE="$HOOK_DIR/$DOWN_HOOK"
+	local TO_WRITE="$UP_HOOK_FILE $DOWN_HOOK_FILE $ACTION_SCRIPT"
+	
+	handle_to_write $TO_WRITE
+
+	# Make sure display name is a valid sysfs name
+	[[ ! -z "$DISPLAY_NAME" && -d "$DISPLAY_PATH/$DISPLAY_NAME" ]] || fail "Not a valid display name: '$DISPLAY_NAME'"
+
+
+	# Prerequisites
+	err "Fetching needed packages..."
+	sudo apt-get install acpi acpid || fail "Could not retrieve needed packages"
+	err
+
+	if [[ -z $UP_EVENT ]]; then
+		err "Press the keystroke for 'brightness up', and I will attempt to detect the event string"
+		UP_EVENT=`listen_for_event 'video\/brightnessup'`
+	fi	
+	err "Up-event string: $UP_EVENT"
+	err
+
+	if [[ -z $DOWN_EVENT ]]; then
+		err "Press the keystroke for 'brightness down', and I will attempt to detect the event string"
+		DOWN_EVENT=`listen_for_event 'video\/brightnessdown'`
+	fi	
+	err "Down-event string: $DOWN_EVENT"
+	err
+	
+	err "Writing $ACTION_SCRIPT..."
+
+	# Write out the message-handler script
+	echo "#!/bin/bash
+
+	$(emit_assignment DISPLAY_PATH)
+	$(emit_assignment DISPLAY_NAME)
+	$(emit_assignment BRIGHTNESS_DETENTS)
+
+	" | sudo tee  "$ACTION_SCRIPT" > /dev/null || fail "Error writing event handler at: $ACTION_SCRIPT"
+
+	echo '
+	# $1 is upper limit
+	# $2 is x
+	wrap(){
+		local X;
+		local MOD;
+
+		let MOD=$1+1
+		let X=$2%$MOD
+		
+		[[ $X -lt 0 ]] && let X=MOD+X;
+		echo "$X"
+	}
+
+	DISPLAY_TREE="$DISPLAY_PATH/$DISPLAY_NAME"
+	BRIGHTNESS_FILE="$DISPLAY_TREE/brightness"
+	MAX_BRIGHT=`cat "$DISPLAY_TREE/max_brightness"`
+	NOW_BRIGHT=`cat "$BRIGHTNESS_FILE"`
+	let INCREMENT=MAX_BRIGHT/BRIGHTNESS_DETENTS
+	[[ $INCREMENT -gt 0 ]] || let INCREMENT=1
+	let DELTA=INCREMENT*$1
+
+	# Align brightness setting so that it stops at consistent detents rather than drifting around
+	let NEW_BRIGHT-=NEW_BRIGHT%INCREMENT
+
+	let NEW_BRIGHT=NOW_BRIGHT+DELTA
+
+	NEW_BRIGHT=`wrap "$MAX_BRIGHT" "$NEW_BRIGHT"`
+	
+
+	# If this is the highest increment in the series, then bump hardware setting to max 
+	let REMAIN=MAX_BRIGHT-NEW_BRIGHT
+	[[ "$REMAIN" -lt "$INCREMENT" ]] && let NEW_BRIGHT=MAX_BRIGHT
+
+	echo $NEW_BRIGHT > "$DISPLAY_TREE/brightness" || echo "Failed sending brightness update to sysfs"
+
+
+	' | sudo tee -a "$ACTION_SCRIPT" > /dev/null || fail "Error writing event handler at: $ACTION_SCRIPT"
+
+	sudo chmod a=rx "$ACTION_SCRIPT" || echo "Failed setting event handler permissions" > /dev/stderr
+
+	write_hook_file "$UP_EVENT" "$ACTION_SCRIPT 1" "$UP_HOOK_FILE"
+	write_hook_file "$DOWN_EVENT" "$ACTION_SCRIPT -1" "$DOWN_HOOK_FILE"
+
+	# Enable and launch acpid
+	err "Enabling acpid at system start..."
+	sudo systemctl enable acpid || fail "Could not enable acpid"
+	err "Restarting acpid to make new config current..."
+	sudo systemctl restart acpid || fail "Failed to restart acpidi"
+	err "Success!"
+	err
+}
+
+feature_synd(){
+	handle_to_write "$SYND_START"
+	sudo apt install xserver-xorg-input-synaptics
+	err "Configuring touchpad re-enable delay: $SYND_DELAY"
+	err "Writing syndaemon start script..."
+	echo \
+"#!/bin/bash
+/usr/bin/syndaemon -k -R -i \"$SYND_DELAY\" &
+" | sudo tee "$SYND_START" > /dev/null || fail "Error writing syndaemon start script"
+
+	sudo chmod a=r,u+w "$SYND_START" || fail "Error setting script permissions"
+	err "Success."
+	err "Automatic touchpad blocking should be effective the next time you start a new X11 session"
+	err
+}
+
+err "Making sure we have sed..."
+# We need it early
+TMP=`sudo apt install sed 2>&1` 
+
+if [[ ! $? ]]; then
+	err "Couldn't fetch sed..."
+	err "$TMP"
+	fail
+fi
+
+err Ok
+
+# Process command-line arguments
+handle_args $@
+
+case "$SCRIPT_FEATURE" in
+	"brightness_keys")
+		feature_brightness_keys
+		;;
+
+	"synd")
+		feature_synd
+		;;
+
+	*)
+		fail_wusage "Unrecognized action: $SCRIPT_FEATURE"
+		;;
+esac
+
+
