@@ -1,13 +1,14 @@
 laptop-tool
 ===========
 
-A script that enables screen brightness keys and/or automatic touchpad-blocking for some laptops under some Linux distributions, especially the ASUS Vivobook 15 under Debian Buster
-Jose Batista 2020
+_A script that enables screen brightness keys and/or automatic touchpad-blocking for some laptops
+under some Linux distributions, especially the ASUS Vivobook 15 under Debian Buster_  
+Jose Batista 2020  
 
 Here we provide two main functions intended to improve the usability of an Asus Vivobook 15
 on Debian Buster. However, these may prove useful on other configurations. Try it and find out.
 
-Firstly, we provide the "brightness_keys" feature, which enables the otherwise unresponsive
+Firstly, we provide the "brightness\_keys" feature, which enables the otherwise unresponsive
 backlight keys, which on an the Asus Vivobook 15 are the fn-F4 and fn-f5 keys.
 We accomplish this by adding acpid hooks for the keystrokes and we route them to a script
 which talks to sysfs to bump the hardware brightness up and down in fixed increments.
