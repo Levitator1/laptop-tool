@@ -26,8 +26,9 @@ adjustable, and is specified in decimal or float seconds.
 LICENSE
 =======
 
-Do whatever. If this script nukes your system, it's your fault. We make an effort to
-warn before any files are overwritten, but there is no guarantee that our choice
-of file names will not conflict with some other application or OS, now or in the future.
-So, run without -f initially and make note of any potential conflicts.
+Do whatever. Credit the author. If this script nukes your system, it's your fault. 
+We make an effort to warn before any files are overwritten, but there is no guarantee
+that our choice of file names will not conflict with some other application or OS, 
+whether now or in the future. So, run without -f initially and make note of any potential
+conflicts.
 
