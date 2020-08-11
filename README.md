@@ -15,7 +15,7 @@ which talks to sysfs to bump the hardware brightness up and down in fixed increm
 We can autodetect the key events, so your device need not have the exact same keys.
 Based on concept here: https://ptc-it.de/screen-brightness-workaround/
 
-Secondly, we offer the "synd" function, which configures the Elantec or Synaptics keypad
+Secondly, we offer the "synd" function, which configures the Elantec or Synaptics touchpad
 to shut off whenever you are typing, so that accidental contact will not produce spurious
 input events which otherwise make text editing and other things a nightmare.
 We accomplish this by installing an Xsession script which starts syndaemon for every
