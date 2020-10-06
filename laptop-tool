@@ -260,6 +260,9 @@ feature_brightness_keys(){
 	sudo apt-get install acpi acpid || fail "Could not retrieve needed packages"
 	err
 
+	# We may have just now installed acpid, so make sure it's running
+	systemctl start acpid
+
 	if [[ -z $UP_EVENT ]]; then
 		err "Press the keystroke for 'brightness up', and I will attempt to detect the event string"
 		UP_EVENT=`listen_for_event 'video\/brightnessup'`
