@@ -22,6 +22,9 @@ We accomplish this by installing an Xsession script which starts syndaemon for e
 new X11 session on the system. The delay with which the touchpad is re-enabled is
 adjustable, and is specified in decimal or float seconds.
 
+Also included is an xorg configuration file that you can use to launch X11 with generic
+non-accelerated graphics, so that you can open a Web browser to fetch the proper drivers
+from AMD's inconsiderate and non-wget-friendly Web site.
 
 LICENSE
 =======
